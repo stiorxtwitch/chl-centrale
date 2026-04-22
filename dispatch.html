@@ -158,6 +158,22 @@
     .btn-radio-accept:hover{background:rgba(34,197,94,0.25);}
     .btn-radio-accept.accepted{background:rgba(34,197,94,0.3);border-color:var(--green);}
 
+    /* AI Recap loading animation */
+    .ai-loading{display:flex;align-items:center;gap:12px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:6px;}
+    .ai-loading-dots{display:flex;gap:5px;}
+    .ai-loading-dots span{width:7px;height:7px;border-radius:50%;background:#a855f7;animation:dotBounce 1.2s ease-in-out infinite;}
+    .ai-loading-dots span:nth-child(2){animation-delay:0.2s;}
+    .ai-loading-dots span:nth-child(3){animation-delay:0.4s;}
+    @keyframes dotBounce{0%,60%,100%{transform:translateY(0);opacity:0.4}30%{transform:translateY(-8px);opacity:1}}
+    .ai-loading-text{font-size:12px;color:#d8b4fe;letter-spacing:1.5px;text-transform:uppercase;font-family:'Rajdhani',sans-serif;font-weight:700;}
+
+    /* Streaming text */
+    .ai-stream-text{font-size:13px;color:var(--text);line-height:1.7;white-space:pre-wrap;
+      background:rgba(168,85,247,0.04);padding:14px;border-radius:4px;border:1px solid rgba(168,85,247,0.2);
+      border-left:3px solid #a855f7;min-height:60px;}
+    .ai-stream-cursor{display:inline-block;width:2px;height:14px;background:#a855f7;animation:cursorBlink 0.7s ease-in-out infinite;vertical-align:middle;margin-left:2px;}
+    @keyframes cursorBlink{0%,100%{opacity:1}50%{opacity:0}}
+
     /* Action bar */
     .detail-actions{padding:12px 20px;border-top:1px solid var(--blue-border);display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0;}
 
@@ -302,6 +318,13 @@
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrdGF3YmFwb3NuZGZ4aWpreGRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwNzUyNDUsImV4cCI6MjA3OTY1MTI0NX0.tY-CHuyb2zr9s6hlGkwmrdTvg920VVNghI9S45CjwKk'
   );
 
+  // ==================== CONFIG ====================
+  // URL de ta Supabase Edge Function qui fait proxy vers l'API Anthropic
+  // Elle doit être déployée dans ton projet Supabase sous le nom "anthropic-proxy"
+  // Voir les instructions de déploiement dans le README ci-dessous
+  const EDGE_FUNCTION_URL = 'https://gktawbaposndfxijkxdk.supabase.co/functions/v1/anthropic-proxy';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdrdGF3YmFwb3NuZGZ4aWpreGRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQwNzUyNDUsImV4cCI6MjA3OTY1MTI0NX0.tY-CHuyb2zr9s6hlGkwmrdTvg920VVNghI9S45CjwKk';
+
   let currentUser = null;
   let interventions = [];
   let onlineUsers = [];
@@ -314,6 +337,7 @@
   let toastIntId = null;
   let knownIntIds = new Set();
   let isSpeaking = false;
+  let isGeneratingAI = false;
 
   const ROLE_LABELS = {
     medecin:'Médecin',chirurgien:'Chirurgien',infirmier:'Infirmier',
@@ -506,7 +530,7 @@
             <button class="btn-radio btn-radio-accept ${isAccepted?'accepted':''}" onclick="acceptInt()">
               ${isAccepted?'✅ Acceptée':'👍 Accepter'}
             </button>
-            <button class="btn-radio" style="background:rgba(168,85,247,0.15);color:#d8b4fe;border:1px solid rgba(168,85,247,0.3);" onclick="generateAI()">✨ IA Récap</button>
+            <button class="btn-radio" id="btnAI" style="background:rgba(168,85,247,0.15);color:#d8b4fe;border:1px solid rgba(168,85,247,0.3);" onclick="generateAI()">✨ IA Récap</button>
           </div>
         </div>
       </div>
@@ -624,32 +648,117 @@
     window.speechSynthesis.speak(utt);
   };
 
-  // ==================== AI RECAP ====================
+  // ==================== AI RECAP (via Supabase Edge Function) ====================
   window.generateAI = async function() {
+    if (isGeneratingAI) return;
+    isGeneratingAI = true;
+
     const zone = document.getElementById('aiRecapZone');
-    zone.innerHTML = '<div style="padding:14px;text-align:center;color:var(--muted);font-size:12px;letter-spacing:1px;">✨ Génération en cours...</div>';
+    const btnAI = document.getElementById('btnAI');
+    if (btnAI) { btnAI.disabled = true; btnAI.textContent = '⏳ Génération...'; }
+
+    // Afficher l'animation de chargement
+    zone.innerHTML = `
+      <div class="det-section">
+        <div class="det-section-title">✨ Récapitulatif IA</div>
+        <div class="ai-loading">
+          <div class="ai-loading-dots"><span></span><span></span><span></span></div>
+          <span class="ai-loading-text">Analyse de l'intervention en cours...</span>
+        </div>
+      </div>`;
+
     const i = selectedInt;
-    const prompt = `Tu es un système de dispatch médical d'urgence du CHL (Centre Hospitalier de Liège). Génère un récapitulatif d'intervention structuré et professionnel pour les intervenants. Intervention : Code=${i.code}, Titre=${i.titre}, Description=${i.description}, Localisation=${i.localisation||'Non précisée'}, Priorité=${i.priorite}, Unités=${(i.units_assignees||[]).join(', ')||'Non assignées'}, Intervenants=${(i.membres_noms||[]).join(', ')||'Non assignés'}. Fournis : 1) Résumé de situation (3 lignes max) 2) Points clés pour les intervenants 3) Consignes de sécurité adaptées 4) Code couleur priorité. Sois concis et professionnel. Réponds en français.`;
-    
+    const prompt = `Tu es un système de dispatch médical d'urgence du CHL (Centre Hospitalier de Liège).
+Génère un récapitulatif d'intervention structuré et professionnel pour les intervenants.
+
+DONNÉES DE L'INTERVENTION :
+- Code : ${i.code}
+- Titre : ${i.titre}
+- Description : ${i.description}
+- Localisation : ${i.localisation||'Non précisée'}
+- Priorité : ${i.priorite?.toUpperCase()}
+- Unités assignées : ${(i.units_assignees||[]).join(', ')||'Non assignées'}
+- Intervenants : ${(i.membres_noms||[]).join(', ')||'Non assignés'}
+
+Fournis un récapitulatif avec :
+1. 🔴 SITUATION (2-3 lignes max, factuel)
+2. ⚡ POINTS CLÉS pour les intervenants (3-4 points max)
+3. 🛡 CONSIGNES DE SÉCURITÉ adaptées à la situation
+4. 🎯 CODE PRIORITÉ avec justification (1 phrase)
+
+Sois concis, professionnel et direct. Réponds en français.`;
+
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      // Appel via la Supabase Edge Function (évite les problèmes CORS)
+      const res = await fetch(EDGE_FUNCTION_URL, {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+        },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 600,
-          messages: [{role:'user',content:prompt}]
+          max_tokens: 700,
+          messages: [{ role: 'user', content: prompt }]
         })
       });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errText}`);
+      }
+
       const data = await res.json();
-      const text = data.content?.[0]?.text || 'Erreur de génération.';
-      zone.innerHTML = `<div class="det-section">
-        <div class="det-section-title">✨ Récapitulatif IA</div>
-        <div style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;background:rgba(14,165,233,0.04);padding:12px;border-radius:4px;border:1px solid var(--blue-border);">${escH(text)}</div>
-      </div>`;
+      const text = data.content?.[0]?.text || 'Erreur : réponse vide.';
+
+      // Afficher avec effet de streaming simulé
+      zone.innerHTML = `
+        <div class="det-section">
+          <div class="det-section-title">✨ Récapitulatif IA</div>
+          <div class="ai-stream-text" id="aiStreamText"></div>
+        </div>`;
+
+      // Animation de typing
+      const el = document.getElementById('aiStreamText');
+      el.innerHTML = '<span class="ai-stream-cursor"></span>';
+      let charIdx = 0;
+      const speed = 12; // ms par caractère
+      function typeNext() {
+        if (charIdx < text.length) {
+          const chunk = text.slice(0, charIdx + 1);
+          el.innerHTML = escH(chunk).replace(/\n/g,'<br>') + '<span class="ai-stream-cursor"></span>';
+          charIdx++;
+          setTimeout(typeNext, speed);
+        } else {
+          // Terminé, retirer le curseur
+          el.innerHTML = escH(text).replace(/\n/g,'<br>');
+        }
+      }
+      typeNext();
+
+      // Lire le récap en radio si souhaité
+      if (btnAI) {
+        btnAI.disabled = false;
+        btnAI.textContent = '✨ IA Récap';
+      }
+
     } catch(err) {
-      zone.innerHTML = `<div class="det-section"><div style="color:#fca5a5;font-size:12px;">Erreur: ${err.message}</div></div>`;
+      zone.innerHTML = `
+        <div class="det-section">
+          <div class="det-section-title">✨ Récapitulatif IA</div>
+          <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:4px;padding:12px;">
+            <div style="color:#fca5a5;font-size:12px;font-weight:600;letter-spacing:1px;margin-bottom:6px;">⚠ ERREUR DE CONNEXION</div>
+            <div style="color:#fca5a5;font-size:11px;line-height:1.5;">${escH(err.message)}</div>
+            <div style="color:var(--muted);font-size:11px;margin-top:8px;line-height:1.5;">
+              Vérifie que la Supabase Edge Function "anthropic-proxy" est bien déployée.<br>
+              Voir les instructions dans le fichier README.
+            </div>
+          </div>
+        </div>`;
+      if (btnAI) { btnAI.disabled = false; btnAI.textContent = '✨ IA Récap'; }
     }
+
+    isGeneratingAI = false;
   };
 
   // ==================== ONLINE STAFF ====================
